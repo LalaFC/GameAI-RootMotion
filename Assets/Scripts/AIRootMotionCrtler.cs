@@ -1,4 +1,5 @@
 using System.Collections;
+using Unity.VisualScripting;
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.UI;
@@ -28,6 +29,7 @@ public class AIRootMotionCrtler : MonoBehaviour
             }
             else
             {
+                /*isOffNavmesh = true;*/
                 var dir = (agent.steeringTarget - transform.position).normalized;
                 var aniDir = transform.InverseTransformDirection(dir);
                 var isFacingMoveDirection = Vector2.Dot(dir, transform.forward) > .5f;
@@ -62,16 +64,39 @@ public class AIRootMotionCrtler : MonoBehaviour
     }
     IEnumerator DoOffMeshLink(OffMeshLinkData link)
     {
+        //var StartPos = transform.position;
+        while (true)
+        {
+            transform.position = Vector3.Lerp(transform.position, link.endPos, Time.deltaTime);
+            var direction = (link.endPos - link.startPos).normalized;
+            transform.rotation = Quaternion.RotateTowards(transform.rotation, Quaternion.LookRotation(direction), maxTarget * Time.deltaTime);
+            var isRotationGood = Vector3.Dot(direction,transform.forward) > 0.8f;
+            if (isRotationGood)
+            {
+                break;
+            }
+            yield return null;
+        }
+
         animator.CrossFade("Jump", 0.2f);
+        yield return new WaitForSeconds(0.2f);
+
         var time = 0.7f;
         var totalTime = time;
 
         while (time > 0)
         {
+
             time = Mathf.Max(0, time - Time.deltaTime);
-            transform.position = Vector3.Lerp(link.startPos, link.endPos, 1-time / totalTime);
-            yield return new WaitForSeconds(0);
+/*            transform.position = Vector3.Lerp(link.startPos, link.endPos, 1-time / totalTime);
+            yield return new WaitForSeconds(0);*/
+            var goal = Vector3.Lerp(link.startPos, link.endPos, 1 - time / totalTime);
+            var elapsedTime = totalTime - time;
+            transform.position = elapsedTime > .3f ? goal : Vector3.Lerp(transform.position, goal, elapsedTime/.3f);
+            yield return null;
+
         }
+        transform.position = link.endPos;
         agent.CompleteOffMeshLink();
     }
 
