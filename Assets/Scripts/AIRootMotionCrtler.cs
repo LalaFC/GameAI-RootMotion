@@ -1,23 +1,34 @@
 using System.Collections;
-using Unity.VisualScripting;
 using UnityEngine;
 using UnityEngine.AI;
-using UnityEngine.UI;
 
 public class AIRootMotionCrtler : MonoBehaviour
 {
     [SerializeField] private NavMeshAgent agent;
     [SerializeField] private Animator animator;
-    [SerializeField] private float maxTarget;
+    [SerializeField] private float maxTarget = 360f;
     [SerializeField] private bool isOffNavmesh;
+    [SerializeField] private GameObject target;
+
+    private Vector3 lastPosition;
+    private float stuckCheckTimer;
+    private float stuckThreshold = 0.1f;
+    private float stuckDuration = 1f;
 
     private void OnValidate()
     {
-      if(!agent) agent = GetComponent<NavMeshAgent>();
-      if(!animator) animator = GetComponent<Animator>();
+        if (!agent) agent = GetComponent<NavMeshAgent>();
+        if (!animator) animator = GetComponent<Animator>();
     }
+
     private void Update()
     {
+        if (!agent.isOnNavMesh)
+        {
+            Debug.LogWarning($"{name} is off the NavMesh!");
+            return;
+        }
+
         if (agent.hasPath)
         {
             if (agent.isOnOffMeshLink)
@@ -25,26 +36,25 @@ public class AIRootMotionCrtler : MonoBehaviour
                 isOffNavmesh = true;
                 var link = agent.currentOffMeshLinkData;
                 StartCoroutine(DoOffMeshLink(link));
-
             }
             else
             {
-                /*isOffNavmesh = true;*/
-                var dir = (agent.steeringTarget - transform.position).normalized;
-                var aniDir = transform.InverseTransformDirection(dir);
-                var isFacingMoveDirection = Vector2.Dot(dir, transform.forward) > .5f;
+                Vector3 dir = (agent.steeringTarget - transform.position).normalized;
+                Vector3 aniDir = transform.InverseTransformDirection(dir);
+                bool isFacingMoveDirection = Vector3.Dot(dir, transform.forward) > 0.5f;
 
                 animator.SetFloat("Horizontal", isFacingMoveDirection ? aniDir.x : 0, 0.5f, Time.deltaTime);
                 animator.SetFloat("Vertical", isFacingMoveDirection ? aniDir.z : 0, 0.5f, Time.deltaTime);
 
                 transform.rotation = Quaternion.RotateTowards(transform.rotation, Quaternion.LookRotation(dir), maxTarget * Time.deltaTime);
 
-                if (Vector3.Distance(transform.position, agent.destination) < agent.radius)
+                if (agent.remainingDistance <= agent.stoppingDistance + 0.1f && !agent.pathPending)
                 {
                     agent.ResetPath();
                 }
             }
 
+            HandleStuckDetection();
         }
         else
         {
@@ -52,62 +62,94 @@ public class AIRootMotionCrtler : MonoBehaviour
             animator.SetFloat("Vertical", 0, 0.25f, Time.deltaTime);
         }
 
-        if ((Input.GetMouseButtonDown(0)))
+        HandleMouseInput();
+    }
+
+    void HandleMouseInput()
+    {
+        if ((Input.GetMouseButtonDown(0) && target != null))
         {
             var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
-            var isHit = Physics.Raycast(ray, out RaycastHit hit, maxTarget);
-            if (isHit)
+            if (Physics.Raycast(ray, out RaycastHit hit, maxTarget))
             {
-                agent.destination = hit.point; 
+                if (NavMesh.SamplePosition(hit.point, out NavMeshHit navHit, 1.0f, NavMesh.AllAreas))
+                {
+                    agent.SetDestination(navHit.position);
+                }
             }
         }
+
+        if (Input.GetKeyDown(KeyCode.Q) && target != null)
+        {
+            agent.SetDestination(target.transform.position);
+        }
     }
+
+    void HandleStuckDetection()
+    {
+        float movement = Vector3.Distance(transform.position, lastPosition);
+        stuckCheckTimer += Time.deltaTime;
+
+        if (movement < stuckThreshold)
+        {
+            if (stuckCheckTimer >= stuckDuration)
+            {
+                Debug.LogWarning($"{name} seems to be stuck. Recalculating path...");
+                agent.SetDestination(agent.destination); // Refresh path
+                stuckCheckTimer = 0;
+            }
+        }
+        else
+        {
+            stuckCheckTimer = 0;
+        }
+
+        lastPosition = transform.position;
+    }
+
     IEnumerator DoOffMeshLink(OffMeshLinkData link)
     {
-        //var StartPos = transform.position;
-        while (true)
+        var startPos = transform.position;
+        var endPos = link.endPos;
+        var direction = (endPos - startPos).normalized;
+
+        // Align to direction
+        while (Vector3.Dot(direction, transform.forward) < 0.8f)
         {
-            transform.position = Vector3.Lerp(transform.position, link.endPos, Time.deltaTime);
-            var direction = (link.endPos - link.startPos).normalized;
             transform.rotation = Quaternion.RotateTowards(transform.rotation, Quaternion.LookRotation(direction), maxTarget * Time.deltaTime);
-            var isRotationGood = Vector3.Dot(direction,transform.forward) > 0.8f;
-            if (isRotationGood)
-            {
-                break;
-            }
             yield return null;
         }
 
         animator.CrossFade("Jump", 0.2f);
         yield return new WaitForSeconds(0.2f);
 
-        var time = 0.7f;
-        var totalTime = time;
+        float time = 0.7f;
+        float elapsed = 0f;
 
-        while (time > 0)
+        while (elapsed < time)
         {
-
-            time = Mathf.Max(0, time - Time.deltaTime);
-/*            transform.position = Vector3.Lerp(link.startPos, link.endPos, 1-time / totalTime);
-            yield return new WaitForSeconds(0);*/
-            var goal = Vector3.Lerp(link.startPos, link.endPos, 1 - time / totalTime);
-            var elapsedTime = totalTime - time;
-            transform.position = elapsedTime > .3f ? goal : Vector3.Lerp(transform.position, goal, elapsedTime/.3f);
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / time);
+            transform.position = Vector3.Lerp(startPos, endPos, t);
             yield return null;
-
         }
-        transform.position = link.endPos;
+
+        transform.position = endPos;
         agent.CompleteOffMeshLink();
+    }
+
+    public void AcquireTarget(GameObject player)
+    {
+        target = target != player ? player : target;
     }
 
     private void OnDrawGizmos()
     {
-        if (agent.hasPath) 
+        if (agent != null && agent.hasPath && agent.path.corners.Length > 1)
         {
-
-            for (int i = 0; i<agent.path.corners.Length-1; i++)
+            for (int i = 0; i < agent.path.corners.Length - 1; i++)
             {
-                Debug.DrawLine(agent.path.corners[1], agent.path.corners[i+1], Color.red);
+                Debug.DrawLine(agent.path.corners[i], agent.path.corners[i + 1], Color.blue);
             }
         }
     }
